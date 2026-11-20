@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prompt Refiner</title>
+<link rel="icon" href="data:,">
+<script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+<style>
+  :root {
+    --bg:#f4f3ef; --panel:#fff; --ink:#1c1b18; --muted:#6b685f; --faint:#9a978d; --line:#e3e0d7; --soft:#faf9f6;
+    --accent:#b5532c; --accent-soft:#f6e6de; --ok:#2c7a4b; --ok-soft:#e2f2e8; --warn:#9a5b00; --warn-soft:#fbefd9;
+    --err:#b3261e; --err-soft:#f9dedb; --info:#3d5a99; --info-soft:#e3e9f6;
+    --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+    --radius: 12px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#141412; --panel:#1d1d1a; --ink:#ebe9e3; --muted:#a3a096; --faint:#77746b; --line:#33322d; --soft:#181816;
+            --accent:#e0794c; --accent-soft:#3a2419; --ok:#5cc48a; --ok-soft:#1b3125; --warn:#e2a44c; --warn-soft:#38301c;
+            --err:#f27a70; --err-soft:#3d2220; --info:#8fb0f0; --info-soft:#1f2a42; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14.5px/1.55 system-ui,"Segoe UI",sans-serif; }
+  header { display:flex; align-items:center; gap:12px; padding:12px 24px; background:var(--panel); border-bottom:1px solid var(--line); position:sticky; top:0; z-index:10; }
+  header h1 { font-size:15.5px; margin:0; letter-spacing:.01em; } .ver { color:var(--faint); font-size:12px; }
+  .status { margin-left:auto; display:flex; gap:7px; align-items:center; font-size:12.5px; color:var(--muted); }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--faint); } .dot.on { background:var(--ok); } .dot.off { background:var(--err); }
+  main { max-width:1380px; margin:0 auto; padding:20px; display:grid; grid-template-columns:minmax(0,5fr) minmax(0,7fr); gap:18px; align-items:start; }
+  @media (max-width:1100px) { main { grid-template-columns:1fr; } .left { position:static !important; } }
+  .left { position:sticky; top:68px; display:flex; flex-direction:column; gap:14px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:16px 18px; }
+  .card h2 { margin:0 0 10px; font-size:11.5px; letter-spacing:.09em; text-transform:uppercase; color:var(--muted); display:flex; gap:8px; align-items:center; }
+  textarea, input[type=text], select { width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:8px; background:var(--soft); color:var(--ink); font:inherit; }
+  textarea:focus, input:focus, select:focus { outline:2px solid var(--accent-soft); border-color:var(--accent); }
+  #prompt { min-height:150px; font:13.5px/1.6 var(--mono); resize:vertical; }
+  .opts { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-top:10px; }
+  .field { display:flex; flex-direction:column; gap:3px; font-size:11.5px; color:var(--muted); }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:10px; }
+  .row label { display:flex; gap:6px; align-items:center; font-size:13px; color:var(--muted); cursor:pointer; }
+  .spacer { flex:1; }
+  button { padding:8px 14px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--ink); font:inherit; cursor:pointer; white-space:nowrap; }
+  button:hover { border-color:var(--faint); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  button:disabled { opacity:.55; cursor:progress; }
+  .hint { color:var(--muted); font-size:12.5px; } .faint { color:var(--faint); }
+  .hidden { display:none !important; }
+  .note { border:1px solid var(--warn); background:var(--warn-soft); color:var(--warn); padding:8px 12px; border-radius:8px; font-size:13px; }
+
+  /* live score strip */
+  .strip { display:grid; grid-template-columns:auto 1fr; gap:16px; align-items:center; }
+  .ring { width:64px; height:64px; border-radius:50%; display:grid; place-items:center; font-weight:750; font-size:20px; position:relative; }
+  .ring::after { content:""; position:absolute; inset:6px; border-radius:50%; background:var(--panel); }
+  .ring span { position:relative; z-index:1; }
+  .dims { display:grid; grid-template-columns:1fr 1fr; gap:6px 16px; }
+  .dim { font-size:12px; color:var(--muted); } .dim .top { display:flex; justify-content:space-between; } .dim b { color:var(--ink); }
+  .bar { height:5px; background:var(--line); border-radius:99px; overflow:hidden; margin-top:3px; } .bar > div { height:100%; border-radius:99px; transition:width .25s; }
+
+  /* annotated */
+  .annot { font:13px/1.8 var(--mono); background:var(--soft); border:1px solid var(--line); border-radius:8px; padding:10px 12px; white-space:pre-wrap; word-break:break-word; min-height:44px; }
+  .annot mark { background:none; color:inherit; border-radius:3px; cursor:help; }
+  .annot mark.warn { background:var(--warn-soft); box-shadow:inset 0 -2px var(--warn); }
+  .annot mark.error { background:var(--err-soft); box-shadow:inset 0 -2px var(--err); }
+  .annot mark.info { box-shadow:inset 0 -2px var(--info); }
+  .annot mark.removed { text-decoration:line-through; color:var(--faint); }
+  .legend-row { display:flex; gap:12px; flex-wrap:wrap; font-size:11.5px; color:var(--muted); margin-top:6px; }
+  .sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
+
+  /* tabs */
+  .tabs { display:flex; gap:2px; border-bottom:1px solid var(--line); margin:-4px -18px 14px; padding:0 12px; overflow-x:auto; }
+  .tab { border:0; background:none; border-radius:0; padding:9px 12px; color:var(--muted); font-size:13.5px; border-bottom:2px solid transparent; margin-bottom:-1px; }
+  .tab.on { color:var(--ink); border-bottom-color:var(--accent); font-weight:600; }
+  .tab .n { font-size:11px; background:var(--soft); border:1px solid var(--line); border-radius:99px; padding:0 6px; margin-left:4px; color:var(--muted); }
+  .tab .n.alert { background:var(--warn-soft); border-color:var(--warn); color:var(--warn); }
+  .pane { display:none; } .pane.on { display:block; }
+  .empty { text-align:center; padding:50px 20px; color:var(--muted); }
+  .empty b { display:block; color:var(--ink); font-size:16px; margin-bottom:6px; }
+  h3 { font-size:13px; margin:18px 0 8px; display:flex; gap:8px; align-items:baseline; } h3:first-child { margin-top:2px; }
+
+  /* overview */
+  .anat { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+  @media (max-width:700px) { .anat { grid-template-columns:repeat(2,1fr); } }
+  .tile { border:1px solid var(--line); border-radius:9px; padding:8px 10px; background:var(--soft); }
+  .tile .k { font-size:12.5px; font-weight:600; display:flex; justify-content:space-between; gap:6px; }
+  .tile .s { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
+  .tile .d { font-size:11.5px; color:var(--muted); margin-top:2px; }
+  .tile.present { border-color:var(--ok); } .tile.present .s { color:var(--ok); }
+  .tile.auto { border-color:var(--info); } .tile.auto .s { color:var(--info); }
+  .tile.missing { border-color:var(--err); background:var(--err-soft); } .tile.missing .s { color:var(--err); }
+  .tile.optional .s { color:var(--faint); }
+  .kpis { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+  .kpi { border:1px solid var(--line); border-radius:9px; padding:9px 12px; } .kpi b { font-size:20px; display:block; } .kpi span { font-size:12px; color:var(--muted); }
+  .clue { border-left:3px solid var(--info); background:var(--info-soft); padding:7px 11px; border-radius:0 8px 8px 0; margin-bottom:6px; font-size:13.5px; }
+  .clue .ev { font:12px var(--mono); color:var(--muted); }
+  .dec { display:flex; gap:8px; align-items:center; font-size:13px; padding:4px 0; border-top:1px solid var(--line); } .dec:first-child { border-top:0; }
+  .pill { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; padding:1px 7px; border-radius:99px; border:1px solid currentColor; }
+  .pill.default { color:var(--info); } .pill.flagged { color:var(--warn); } .pill.ask { color:var(--err); } .pill.answered { color:var(--ok); }
+  .pill.high { color:var(--ok); } .pill.medium { color:var(--warn); } .pill.low { color:var(--err); }
+
+  /* objectives */
+  .obj { border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:10px; }
+  .obj .head { display:flex; gap:10px; align-items:center; margin-bottom:6px; }
+  .num { width:24px; height:24px; border-radius:50%; background:var(--accent); color:#fff; font-size:12px; font-weight:700; display:grid; place-items:center; flex:none; }
+  .intent { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--accent); }
+  .src { font-size:12.5px; color:var(--muted); margin-top:6px; } .src q { font-family:var(--mono); font-size:12px; }
+  .chips { display:flex; gap:5px; flex-wrap:wrap; margin-top:6px; }
+  .chip { font-size:11.5px; padding:1px 8px; border:1px solid var(--line); border-radius:99px; color:var(--muted); background:var(--soft); }
+  .chip.cue { font-family:var(--mono); }
+  .mini { font-size:12px; color:var(--muted); margin-top:6px; }
+
+  /* issues */
+  .finding { display:grid; grid-template-columns:54px 1fr; gap:12px; padding:10px 0; border-top:1px solid var(--line); } .finding:first-child { border-top:0; }
+  .sev { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; padding:2px 0; text-align:center; border-radius:5px; height:fit-content; color:#fff; }
+  .sev.error { background:var(--err); } .sev.warn { background:var(--warn); } .sev.info { background:var(--info); }
+  .ft { font-weight:600; } .fdim { color:var(--faint); font-size:11px; margin-left:6px; text-transform:uppercase; letter-spacing:.05em; }
+  .quote { font:12px var(--mono); background:var(--soft); border:1px solid var(--line); border-radius:4px; padding:0 5px; }
+  .fwhy { color:var(--muted); font-size:13px; } .ffix { font-size:13px; margin-top:2px; } .fex { font-size:12.5px; color:var(--ok); }
+
+  /* questions */
+  .qgroup { font-size:11.5px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:14px 0 4px; }
+  .q { padding:10px 0; border-top:1px solid var(--line); } .q p { margin:0; font-weight:600; font-size:13.5px; }
+  .q .why { font-size:12.5px; color:var(--muted); margin:2px 0 7px; }
+  .opt { padding:3px 10px; font-size:12.5px; border-radius:99px; margin:0 5px 6px 0; }
+  .opt.on { border-color:var(--accent); background:var(--accent-soft); color:var(--accent); font-weight:600; }
+  .q .def { font-size:12px; color:var(--info); margin-top:4px; }
+
+  /* claude view */
+  .interp { border-left:3px solid var(--accent); background:var(--soft); padding:9px 12px; border-radius:0 8px 8px 0; }
+  .conflict { color:var(--err); font-size:13.5px; margin-top:6px; }
+  .assume { display:grid; grid-template-columns:1fr auto; gap:8px; margin-bottom:8px; align-items:center; }
+  .seg { display:flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .seg button { border:0; border-radius:0; padding:7px 9px; font-size:12px; }
+  .seg button + button { border-left:1px solid var(--line); }
+  .seg button.on[data-v=correct] { background:var(--ok); color:#fff; } .seg button.on[data-v=wrong] { background:var(--err); color:#fff; } .seg button.on[data-v=unsure] { background:var(--muted); color:#fff; }
+
+  /* result */
+  .wrap { max-width:1380px; margin:0 auto; padding:0 20px 60px; }
+  #output { min-height:480px; font:12.5px/1.6 var(--mono); }
+  .breakdown { display:flex; height:9px; border-radius:99px; overflow:hidden; margin:10px 0 6px; background:var(--line); }
+  .legend { display:flex; flex-wrap:wrap; gap:3px 14px; font-size:12px; color:var(--muted); }
+  .legend i { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:5px; vertical-align:-1px; }
+  .stats { display:flex; flex-wrap:wrap; gap:16px; font-size:12.5px; color:var(--muted); margin-top:8px; } .stats b { color:var(--ink); }
+  .why-block { border:1px solid var(--line); border-radius:10px; padding:10px 14px; margin-bottom:8px; }
+  .why-block .bh { display:flex; gap:10px; align-items:baseline; } .why-block code { font:12.5px var(--mono); color:var(--accent); font-weight:600; }
+  .rule { display:grid; grid-template-columns:1fr; padding:6px 0; border-top:1px dashed var(--line); font-size:13px; }
+  .rule .bc { font-size:12px; color:var(--info); } .rule .bc::before { content:"↳ because "; color:var(--faint); }
+  .compare { display:grid; grid-template-columns:1fr 1fr; gap:12px; } @media (max-width:900px) { .compare { grid-template-columns:1fr; } }
+  .compare pre { margin:0; white-space:pre-wrap; word-break:break-word; font:12px/1.6 var(--mono); background:var(--soft); border:1px solid var(--line); border-radius:8px; padding:12px; max-height:620px; overflow:auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Prompt Refiner</h1><span class="ver" id="ver"></span><span class="ver" id="bootLog">Engine: waiting</span>
+  <span class="status"><span class="dot" id="dot"></span><span id="statusText">loading engine…</span></span>
+</header>
+
+<main>
+  <!-- LEFT: editor + live analysis -->
+  <div class="left">
+    <section class="card">
+      <h2>Your prompt <span class="faint" style="text-transform:none;letter-spacing:0;font-weight:400">analyzed live as you type</span></h2>
+      <textarea id="prompt" spellcheck="false" placeholder="Write it the way you normally would.&#10;Paste code or error output inside ``` ``` and it is kept exactly as-is."></textarea>
+      <div class="opts">
+        <div class="field">Sending to<select id="target"><option value="chat">Claude chat</option><option value="claude-code">Claude Code</option></select></div>
+        <div class="field">Code changes<select id="codeOutput"><option value="auto">Claude decides</option><option value="full">Full files</option><option value="diff">Changed parts</option></select></div>
+        <div class="field hidden">Local model<select id="model"></select></div>
+      </div>
+      <div class="row">
+        <label title="No preamble or closing summary in Claude's answer"><input type="checkbox" id="efficient" checked> Efficient answers</label>
+        <span class="spacer"></span>
+        
+        <button class="primary" id="buildBtn">Build prompt</button>
+      </div>
+      <div id="note" class="note hidden" style="margin-top:10px"></div>
+    </section>
+
+    <section class="card" id="liveCard">
+      <div class="strip">
+        <div class="ring" id="ring"><span id="score">–</span></div>
+        <div class="dims" id="dims"></div>
+      </div>
+      <h3 style="margin-top:14px">Annotated</h3>
+      <div class="annot" id="annot"><span class="faint">Highlights appear here as you type.</span></div>
+      <div class="legend-row">
+        <span><i class="sw" style="background:var(--err-soft);box-shadow:inset 0 -2px var(--err)"></i>Claude will guess</span>
+        <span><i class="sw" style="background:var(--warn-soft);box-shadow:inset 0 -2px var(--warn)"></i>Vague / missing detail</span>
+        <span><i class="sw" style="box-shadow:inset 0 -2px var(--info)"></i>Note</span>
+        <span><s class="faint">removed</s> No meaning</span>
+      </div>
+      <div class="hint" id="normalized" style="margin-top:6px"></div>
+    </section>
+  </div>
+
+  <!-- RIGHT: analysis tabs -->
+  <section class="card" id="analysis">
+    <div class="tabs" id="tabs">
+      <button class="tab on" data-p="overview">Overview</button>
+      <button class="tab" data-p="objectives">Objectives <span class="n" id="nObj">0</span></button>
+      <button class="tab" data-p="issues">Issues <span class="n" id="nIss">0</span></button>
+      <button class="tab" data-p="questions">Missing details <span class="n" id="nQ">0</span></button>
+      
+    </div>
+    <div id="emptyState" class="empty"><b>Start typing on the left</b>The analysis updates as you write: structure, objectives, issues and the details a senior engineer would ask for.</div>
+
+    <div class="pane on" id="p-overview">
+      <div class="kpis" id="kpis"></div>
+      <h3>Prompt structure <span class="hint">what a strong prompt contains, and where yours stands</span></h3>
+      <div class="anat" id="anat"></div>
+      <div id="cluesBox"><h3>What your description already suggests <span class="hint">clues a senior engineer would notice</span></h3><div id="clues"></div></div>
+      <h3>Decisions Claude would otherwise make on its own</h3>
+      <div id="decisions"></div>
+    </div>
+    <div class="pane" id="p-objectives"><div id="objs"></div></div>
+    <div class="pane" id="p-issues"><div id="findings"></div></div>
+    <div class="pane" id="p-questions"><div class="hint" style="margin-bottom:6px">Answer what you know. Anything you skip goes into the prompt with a stated default, so Claude neither stalls nor guesses silently.</div><div id="questions"></div></div>
+    <div class="pane" id="p-claude">
+      <div id="claudeEmpty" class="empty"><b>Not run yet</b>Press <i>Ask local model</i> to see how an AI would read your prompt as-is, and which assumptions it would make. Needs Ollama.</div>
+      <div id="claudeBox" class="hidden">
+        <h3>If you sent it as-is, the AI would</h3>
+        <div class="interp" id="interp"></div>
+        <div id="conflicts"></div>
+        <div id="assumeWrap"><h3>Assumptions it would make <span class="hint">mark each; edit to correct</span></h3><div id="assumptions"></div></div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<div class="wrap">
+  <!-- RESULT -->
+  <section class="card hidden" id="result">
+    <div class="tabs" id="rtabs">
+      <button class="tab on" data-p="prompt">Compiled prompt</button>
+      <button class="tab" data-p="why">Why each part</button>
+      <button class="tab" data-p="compare">Before / after</button>
+    </div>
+    <div id="outWarn" class="note hidden" style="margin-bottom:10px"></div>
+    <div class="pane on" id="r-prompt">
+      <textarea id="output" spellcheck="false"></textarea>
+      <div class="breakdown" id="breakdown"></div>
+      <div class="legend" id="legend"></div>
+    </div>
+    <div class="pane" id="r-why"><div id="why"></div></div>
+    <div class="pane" id="r-compare"><div class="compare"><div><h3>You wrote <span class="hint" id="cmpIn"></span></h3><pre id="cmpBefore"></pre></div><div><h3>Claude receives <span class="hint" id="cmpOut"></span></h3><pre id="cmpAfter"></pre></div></div></div>
+    <div class="row">
+      <div class="stats" id="stats"></div><span class="spacer"></span>
+      
+      <button class="primary" id="copyBtn">Copy</button>
+    </div>
+    <div class="hint" id="saved" style="margin-top:6px"></div>
+  </section>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const S = { check: null, ai: null, answers: {}, assumptions: [], timer: null, seq: 0 };
+const PALETTE = ["#b5532c","#3d5a99","#2c7a4b","#9a5b00","#7a3d99","#2b8a8a","#99803d","#5a5a5a","#c2417a","#4f7a2c","#3d7a99","#995a3d"];
+const DIM_HELP = { clarity: "Is every word unambiguous?", context: "Does Claude know the environment?", specificity: "Are the key details there?", verifiability: "Can the result be checked?" };
+const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+function el(tag, props = {}, kids = []) { const e = Object.assign(document.createElement(tag), props); kids.forEach((k) => k !== "" && k != null && e.append(k)); return e; }
+const color = (v) => v >= 80 ? "var(--ok)" : v >= 55 ? "var(--warn)" : "var(--err)";
+function note(msg) { $("note").textContent = msg || ""; $("note").classList.toggle("hidden", !msg); }
+function busy(btn, on, label) { btn.disabled = on; if (on) { btn.dataset.l = btn.textContent; btn.textContent = label; } else if (btn.dataset.l) btn.textContent = btn.dataset.l; }
+let PY = null;
+function step(t) { const s = document.getElementById("bootLog"); if (s) s.textContent = "Engine: " + t; }
+window.addEventListener("error", (e) => step("error: " + e.message));
+window.addEventListener("unhandledrejection", (e) => step("error: " + ((e.reason && e.reason.message) || e.reason)));
+function engine() {
+  if (!PY) PY = (async () => {
+    step("1/4 starting Python runtime (first visit takes a few seconds)");
+    if (typeof loadPyodide !== "function") throw new Error("Python runtime script did not load");
+    const py = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/" });
+    step("2/4 loading engine files");
+    const res = await fetch("engine.json"); if (!res.ok) throw new Error("engine.json HTTP " + res.status);
+    const files = await res.json();
+    step("3/4 starting engine");
+    py.FS.mkdirTree("/app/promptrefiner");
+    for (const [name, code] of Object.entries(files)) py.FS.writeFile("/app/promptrefiner/" + name, code);
+    py.runPython("\nimport sys, json\nsys.path.insert(0, \"/app\")\nfrom promptrefiner import __version__\nfrom promptrefiner.pipeline import Engine\nfrom promptrefiner.llm import LLMError\n\ndef _no_model(cfg, model):\n    raise LLMError(\"no local model in the hosted version\")\n\nENGINE = Engine(llm_factory=_no_model)\n\ndef call(path, body):\n    req = json.loads(body)\n    req[\"fast\"] = True\n    req[\"no_save\"] = True\n    return json.dumps(ENGINE.check(req) if path == \"/api/check\" else ENGINE.build(req))\n");
+    step("4/4 ready");
+    return py;
+  })();
+  return PY;
+}
+async function api(path, body) {
+  if (path === "/api/meta") return { version: "5.0.0", models: [], default_model: "", defaults: { target: "chat", code_output: "auto", efficient: true } };
+  if (!((body && body.prompt) || "").trim()) throw new Error("The request is empty.");
+  const py = await engine();
+  const fn = py.globals.get("call");
+  try { return JSON.parse(fn(path, JSON.stringify(body))); }
+  catch (e) { throw new Error(String(e.message || e).split("\n").filter(Boolean).pop()); }
+  finally { fn.destroy(); }
+}
+function request(extra = {}) {
+  return Object.assign({ prompt: $("prompt").value, target: $("target").value, code_output: $("codeOutput").value,
+    model: $("model").value, efficient: $("efficient").checked }, extra);
+}
+function tabs(barId, prefix) {
+  $(barId).querySelectorAll(".tab").forEach((t) => t.onclick = () => {
+    $(barId).querySelectorAll(".tab").forEach((x) => x.classList.toggle("on", x === t));
+    document.querySelectorAll(`[id^="${prefix}-"]`).forEach((p) => p.classList.toggle("on", p.id === `${prefix}-${t.dataset.p}`));
+  });
+}
+const PERSIST = ["target", "codeOutput", "model"];
+
+async function init() {
+  tabs("tabs", "p"); tabs("rtabs", "r");
+  try {
+    const m = await api("/api/meta");
+    $("ver").textContent = "v" + m.version;
+    const models = m.models.length ? m.models : [m.default_model];
+    models.forEach((x) => $("model").add(new Option(x, x)));
+    $("model").value = models.includes(m.default_model) ? m.default_model : models[0];
+    $("target").value = m.defaults.target; $("codeOutput").value = m.defaults.code_output; $("efficient").checked = m.defaults.efficient;
+    S.hasModel = m.models.length > 0;
+    $("statusText").textContent = "loading engine…";
+    await engine();
+    $("dot").className = "dot on";
+    $("statusText").textContent = "Ready · runs entirely in your browser";
+
+  } catch (e) { $("dot").className = "dot off"; $("statusText").textContent = "Engine failed to load"; note(e.message); }
+  PERSIST.forEach((id) => { const v = store.get("pr." + id); if (v !== null && [...$(id).options].some((o) => o.value === v)) $(id).value = v; });
+  const last = store.get("pr.prompt"); if (last) { $("prompt").value = last; live(); }
+}
+
+/* ---------- live analysis (rules only, instant) ---------- */
+function live() {
+  clearTimeout(S.timer);
+  S.timer = setTimeout(async () => {
+    const raw = $("prompt").value; store.set("pr.prompt", raw);
+    if (!raw.trim()) { $("emptyState").classList.remove("hidden"); return; }
+    const seq = ++S.seq;
+    try {
+      const c = await api("/api/check", request({ fast: true, answers: answerList() }));
+      if (seq === S.seq) { S.check = c; render(c, raw); }
+    } catch (e) { note(e.message); }
+  }, 350);
+}
+
+function renderAnnotated(raw, spans) {
+  const box = $("annot"); box.innerHTML = ""; let pos = 0;
+  spans.forEach((s) => { if (s.start < pos) return; box.append(raw.slice(pos, s.start), el("mark", { className: s.severity, title: s.title, textContent: raw.slice(s.start, s.end) })); pos = s.end; });
+  box.append(raw.slice(pos));
+}
+
+function render(c, raw) {
+  const A = c.analysis, U = c.understanding;
+  $("emptyState").classList.add("hidden");
+  // score
+  $("score").textContent = A.score;
+  $("ring").style.background = `conic-gradient(${color(A.score)} ${A.score * 3.6}deg, var(--line) 0)`;
+  $("ring").style.color = color(A.score);
+  $("dims").innerHTML = "";
+  Object.entries(A.dimensions).forEach(([k, v]) => $("dims").append(el("div", { className: "dim", title: DIM_HELP[k] }, [
+    el("div", { className: "top" }, [el("span", { textContent: k[0].toUpperCase() + k.slice(1) }), el("b", { textContent: v })]),
+    el("div", { className: "bar" }, [el("div", { style: `width:${v}%;background:${color(v)}` })])])));
+  renderAnnotated(raw, c.spans);
+  const norm = c.changes.filter((x) => x.kind === "slang" || x.kind === "number").map((x) => `${x.from} → ${x.to || "∅"}`);
+  $("normalized").textContent = norm.length ? "Normalized: " + norm.join(" · ") : "";
+
+  // overview
+  const handledQ = U.questions.filter((q) => q.default).length;
+  $("kpis").innerHTML = "";
+  [[U.objectives.length, "objective" + (U.objectives.length === 1 ? "" : "s") + " found"],
+   [A.decisions.length, "decisions Claude would make alone"],
+   [`${A.readability.words}w · ${A.readability.sentences}s`, `longest sentence ${A.readability.longest} words`]]
+    .forEach(([b, t]) => $("kpis").append(el("div", { className: "kpi" }, [el("b", { textContent: b }), el("span", { textContent: t })])));
+  $("anat").innerHTML = "";
+  const LBL = { present: "present", auto: "auto-filled", missing: "missing", optional: "optional" };
+  A.anatomy.forEach((x) => $("anat").append(el("div", { className: "tile " + x.status, title: x.evidence ? `“${x.evidence}”` : "" }, [
+    el("div", { className: "k" }, [el("span", { textContent: x.label }), el("span", { className: "s", textContent: LBL[x.status] })]),
+    el("div", { className: "d", textContent: x.detail })])));
+  $("clues").innerHTML = "";
+  U.clues.forEach((x) => $("clues").append(el("div", { className: "clue" }, [x.text, x.evidence ? el("div", { className: "ev", textContent: "from: “" + x.evidence + "”" }) : ""])));
+  $("cluesBox").classList.toggle("hidden", !U.clues.length);
+  $("decisions").innerHTML = "";
+  if (!A.decisions.length) $("decisions").append(el("div", { className: "hint", textContent: "None. Claude has what it needs." }));
+  A.decisions.forEach((d) => {
+    const answered = d.kind === "missing detail" && S.answers[U.questions.find((q) => q.label === d.what)?.id];
+    const h = answered ? "answered" : d.handled;
+    const txt = { default: "default stated", flagged: "fix it", ask: "Claude must ask", answered: "answered" }[h];
+    $("decisions").append(el("div", { className: "dec" }, [el("span", { className: "pill " + h, textContent: txt }), el("span", { textContent: d.what }), el("span", { className: "faint", textContent: "· " + d.kind })]));
+  });
+
+  // objectives
+  $("nObj").textContent = U.objectives.length;
+  $("objs").innerHTML = "";
+  U.objectives.forEach((o) => {
+    const meta = A.objectives.find((x) => x.id === o.id) || { missing: [] };
+    $("objs").append(el("div", { className: "obj" }, [
+      el("div", { className: "head" }, [el("span", { className: "num", textContent: o.id }), el("span", { className: "intent", textContent: o.label }),
+        el("span", { className: "pill " + o.confidence, textContent: o.confidence + " confidence", title: "How strongly the wording points to this kind of ask" })]),
+      el("div", { textContent: o.text }),
+      el("div", { className: "src" }, ["From your words: ", el("q", { textContent: o.source })]),
+      o.cues.length ? el("div", { className: "chips" }, [el("span", { className: "faint", textContent: "cues:", style: "font-size:11.5px" }), ...o.cues.map((x) => el("span", { className: "chip cue", textContent: x }))]) : "",
+      o.concerns.length ? el("div", { className: "chips" }, o.concerns.map((x) => el("span", { className: "chip", textContent: x }))) : "",
+      meta.missing.length ? el("div", { className: "mini", textContent: "Missing for this objective: " + meta.missing.join(", ") }) : "",
+    ]));
+  });
+
+  // issues
+  const issues = A.findings.filter((f) => !f.question);
+  const nIss = issues.filter((f) => f.severity !== "info").length;
+  $("nIss").textContent = issues.length; $("nIss").classList.toggle("alert", nIss > 0);
+  $("findings").innerHTML = issues.length ? "" : '<div class="empty"><b>No issues</b>The wording is clear.</div>';
+  issues.forEach((f) => $("findings").append(el("div", { className: "finding" }, [
+    el("span", { className: "sev " + f.severity, textContent: f.severity }),
+    el("div", {}, [
+      el("div", {}, [el("span", { className: "ft", textContent: f.title }), el("span", { className: "fdim", textContent: f.dimension })]),
+      f.id === "CL100" ? el("div", { className: "fwhy" }, ["Removed: ", ...f.evidence.split("|").map((w) => el("span", { className: "quote", textContent: w, style: "margin-right:4px;text-decoration:line-through" }))])
+        : f.evidence ? el("div", { className: "fwhy" }, ["In your prompt: ", el("span", { className: "quote", textContent: f.evidence })]) : "",
+      el("div", { className: "fwhy", textContent: f.why }),
+      f.fix && f.id !== "CL100" ? el("div", { className: "ffix", textContent: "Fix: " + f.fix }) : "",
+      f.example ? el("div", { className: "fex", textContent: "e.g. " + f.example }) : "",
+    ])])));
+
+  renderQuestions(U);
+}
+
+function renderQuestions(U) {
+  const ai = (S.ai ? S.ai.questions : []).map((q, i) => ({ id: "ai" + i, q: q.question, options: q.options, why: "Raised by the local model.", default: "", objective: -1, free: true }));
+  const qs = U.questions.concat(ai);
+  S.questions = qs;
+  const open = qs.filter((q) => !S.answers[q.id]).length;
+  $("nQ").textContent = qs.length ? `${qs.length - open}/${qs.length}` : "0"; $("nQ").classList.toggle("alert", open > 0);
+  const box = $("questions"); box.innerHTML = "";
+  if (!qs.length) { box.append(el("div", { className: "empty" }, [el("b", { textContent: "Nothing missing" }), "No standard details are missing for this kind of request."])); return; }
+  const groups = {};
+  qs.forEach((q) => { const g = q.objective > 0 ? `Objective ${q.objective}` : q.objective === 0 ? "General" : "From the local model"; (groups[g] = groups[g] || []).push(q); });
+  Object.entries(groups).forEach(([g, list]) => {
+    box.append(el("div", { className: "qgroup", textContent: g }));
+    list.forEach((q) => {
+      const input = el("input", { type: "text", value: S.answers[q.id] || "", placeholder: q.options.length ? "Pick an option or type your own" : "Your answer" });
+      const opts = el("div", {}, q.options.map((o) => {
+        const b = el("button", { className: "opt" + (S.answers[q.id] === o ? " on" : ""), textContent: o });
+        b.onclick = () => { input.value = o; setAnswer(q, o); opts.querySelectorAll(".opt").forEach((x) => x.classList.toggle("on", x === b)); };
+        return b;
+      }));
+      input.oninput = () => setAnswer(q, input.value);
+      box.append(el("div", { className: "q" }, [el("p", { textContent: q.q }), el("div", { className: "why", textContent: q.why }), q.options.length ? opts : "", input,
+        q.default ? el("div", { className: "def", textContent: "If you skip it: " + q.default }) : ""]));
+    });
+  });
+}
+function answerList() {
+  return (S.questions || []).filter((q) => S.answers[q.id]).map((q) => ({ id: q.free ? "" : q.id, question: q.q, answer: S.answers[q.id] }));
+}
+function setAnswer(q, v) {
+  if (v.trim()) S.answers[q.id] = v.trim(); else delete S.answers[q.id];
+  if (!q.free) { clearTimeout(S.ansTimer); S.ansTimer = setTimeout(live, 500); }
+  const open = S.questions.filter((x) => !S.answers[x.id]).length;
+  $("nQ").textContent = `${S.questions.length - open}/${S.questions.length}`; $("nQ").classList.toggle("alert", open > 0);
+}
+
+/* ---------- local model ---------- */
+async function deep() {
+  if (!$("prompt").value.trim()) return;
+  busy($("deepBtn"), true, "Reading… (CPU: up to a minute)"); note("");
+  try {
+    const c = await api("/api/check", request({ fast: false, answers: answerList() }));
+    S.check = c; S.ai = c.ai; render(c, $("prompt").value);
+    if (c.warning) note(c.warning);
+    const AI = c.ai;
+    $("claudeEmpty").classList.add("hidden"); $("claudeBox").classList.remove("hidden");
+    $("interp").textContent = AI.interpretation || "—";
+    $("conflicts").innerHTML = ""; AI.conflicts.forEach((x) => $("conflicts").append(el("div", { className: "conflict", textContent: "⚠ Conflict: " + x })));
+    S.assumptions = AI.assumptions.map((t) => ({ text: t, status: "unsure" }));
+    $("assumptions").innerHTML = "";
+    S.assumptions.forEach((a) => {
+      const input = el("input", { type: "text", value: a.text }); input.oninput = () => (a.text = input.value);
+      const seg = el("div", { className: "seg" });
+      [["correct", "✓ Correct"], ["wrong", "✗ Wrong"], ["unsure", "? Not sure"]].forEach(([v, t]) => {
+        const b = el("button", { textContent: t, className: v === a.status ? "on" : "" }); b.dataset.v = v;
+        b.onclick = () => { a.status = v; seg.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x.dataset.v === v)); };
+        seg.append(b);
+      });
+      $("assumptions").append(el("div", { className: "assume" }, [input, seg]));
+    });
+    $("assumeWrap").classList.toggle("hidden", !S.assumptions.length);
+    document.querySelector('#tabs .tab[data-p="claude"]').click();
+  } catch (e) { note(e.message); }
+  finally { busy($("deepBtn"), false); }
+}
+
+/* ---------- build ---------- */
+async function build() {
+  const raw = $("prompt").value; if (!raw.trim()) return;
+  PERSIST.forEach((id) => store.set("pr." + id, $(id).value));
+  const answers = answerList();
+  busy($("buildBtn"), true, "Compiling…"); note("");
+  try {
+    const r = await api("/api/build", request({ fast: !S.hasModel, answers, assumptions: S.assumptions, conflicts: S.ai ? S.ai.conflicts : [] }));
+    $("output").value = r.prompt;
+    const total = r.sections.reduce((s, x) => s + x[1], 0) || 1;
+    $("breakdown").innerHTML = ""; $("legend").innerHTML = "";
+    r.sections.forEach(([name, tok], i) => {
+      const col = PALETTE[i % PALETTE.length];
+      $("breakdown").append(el("span", { title: `${name}: ${tok} tokens`, style: `width:${(100 * tok / total).toFixed(2)}%;background:${col};height:100%` }));
+      $("legend").append(el("span", {}, [el("i", { style: `background:${col}` }), `${name} ${tok}`]));
+    });
+    $("why").innerHTML = "";
+    r.explain.forEach((e) => $("why").append(el("div", { className: "why-block" }, [
+      el("div", { className: "bh" }, [el("code", { textContent: "<" + e.block.split(" ")[0] + ">" }), el("span", { className: "hint", textContent: e.tokens + " tokens" })]),
+      el("div", { className: "fwhy", textContent: e.why }),
+      ...e.rules.map((x) => el("div", { className: "rule" }, [el("span", { textContent: x.text }), x.because ? el("span", { className: "bc", textContent: x.because }) : ""])),
+    ])));
+    $("cmpBefore").textContent = raw; $("cmpAfter").textContent = r.prompt;
+    $("cmpIn").textContent = `≈ ${r.stats.input_tokens} tokens`; $("cmpOut").textContent = `≈ ${r.stats.prompt_tokens} tokens`;
+    const s = r.stats;
+    $("stats").innerHTML = `<span>≈ <b>${s.prompt_tokens}</b> tokens</span><span><b>${r.objectives}</b> objective(s)</span><span>${r.target}</span><span>${s.model} · ${s.seconds}s</span>`;
+    $("saved").textContent = r.saved_to ? "Saved: " + r.saved_to : "";
+    $("outWarn").textContent = r.warning || ""; $("outWarn").classList.toggle("hidden", !r.warning);
+    $("result").classList.remove("hidden"); $("result").scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (e) { note(e.message); }
+  finally { busy($("buildBtn"), false); }
+}
+
+$("prompt").addEventListener("input", live);
+["target"].forEach((id) => $(id).addEventListener("change", live));
+$("prompt").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) build(); });
+
+$("buildBtn").onclick = build;
+$("copyBtn").onclick = async () => {
+  const t = $("output").value;
+  try { await navigator.clipboard.writeText(t); } catch { $("output").select(); document.execCommand("copy"); }
+  $("copyBtn").textContent = "Copied ✓"; setTimeout(() => ($("copyBtn").textContent = "Copy"), 1400);
+};
+
+init();
+</script>
+</body>
+</html>
